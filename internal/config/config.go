@@ -38,7 +38,7 @@ func getenv(key, fallback string) string {
 func defaultDataDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return ".broute"
+		return filepath.Join(".broute", "data")
 	}
-	return filepath.Join(home, ".broute")
+	return filepath.Join(home, ".broute", "data")
 }
