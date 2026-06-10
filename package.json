@@ -1,5 +1,5 @@
 {
-  "name": "@dino-vn/broute",
+  "name": "broute",
   "version": "0.0.1",
   "description": "BRoute launcher and updater",
   "type": "module",

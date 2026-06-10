@@ -5,7 +5,7 @@ BRoute is a local routing console for provider accounts and API access.
 ## Install
 
 ```bash
-npx @dino-vn/broute
+npx broute
 ```
 
 The launcher downloads the latest GitHub release into `~/.broute` and starts the bundled server and web UI.
@@ -13,7 +13,7 @@ The launcher downloads the latest GitHub release into `~/.broute` and starts the
 ## Update
 
 ```bash
-npx @dino-vn/broute update
+npx broute update
 ```
 
 The in-app sidebar also checks GitHub releases and can trigger the same update flow.
