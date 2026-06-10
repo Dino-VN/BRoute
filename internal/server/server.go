@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -14,6 +15,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -63,6 +65,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/auth/login", s.handleLogin)
 	s.mux.HandleFunc("/api/auth/status", s.handleAuthStatus)
 	s.mux.HandleFunc("/api/auth/logout", s.handleLogout)
+	s.mux.HandleFunc("/api/update", s.requireAuth(s.handleUpdate))
 	s.mux.HandleFunc("/api/oauth/", s.requireAuth(s.handleOAuth))
 	s.mux.HandleFunc("/api/providers", s.requireAuth(s.handleProviders))
 	s.mux.HandleFunc("/api/providers/", s.requireAuth(s.handleProviderByID))
@@ -74,6 +77,29 @@ func (s *Server) routes() {
 
 func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		latest, err := latestGitHubRelease(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"currentVersion": s.cfg.AppVersion, "latestVersion": "", "updateAvailable": false, "error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"currentVersion": s.cfg.AppVersion, "latestVersion": latest, "updateAvailable": versionDifferent(s.cfg.AppVersion, latest)})
+	case http.MethodPost:
+		cmd := exec.CommandContext(r.Context(), "npx", "broute", "update")
+		cmd.Env = append(os.Environ(), "BROWSER=none")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			writeJSONStatus(w, http.StatusBadGateway, map[string]any{"success": false, "error": err.Error(), "output": strings.TrimSpace(string(output))})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "output": strings.TrimSpace(string(output)), "restartRequired": true})
+	default:
+		methodNotAllowed(w)
+	}
 }
 
 func (s *Server) handleRequireLogin(w http.ResponseWriter, r *http.Request) {
@@ -694,9 +720,10 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 		s.webProxy.ServeHTTP(w, r)
 		return
 	}
-	dist := filepath.Join("web", "dist")
-	if _, err := http.Dir(dist).Open("index.html"); err != nil {
-		dist = filepath.Join("web", "build", "client")
+	dist := s.staticDistDir()
+	if dist == "" {
+		writeError(w, http.StatusNotFound, "Web assets were not found. Run web build or install a release bundle.")
+		return
 	}
 	file := filepath.Join(dist, filepath.Clean(path))
 	if path == "/" {
@@ -706,6 +733,35 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 		file = filepath.Join(dist, "index.html")
 	}
 	http.ServeFile(w, r, file)
+}
+
+func (s *Server) staticDistDir() string {
+	for _, dir := range staticDistCandidates() {
+		if _, err := http.Dir(dir).Open("index.html"); err == nil {
+			return dir
+		}
+	}
+	return ""
+}
+
+func staticDistCandidates() []string {
+	candidates := []string{}
+	if webDir := strings.TrimSpace(os.Getenv("WEB_DIR")); webDir != "" {
+		candidates = append(candidates, webDir)
+	}
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(exeDir, "web", "build", "client"),
+			filepath.Join(exeDir, "web", "dist"),
+			filepath.Join(exeDir, "..", "web", "build", "client"),
+			filepath.Join(exeDir, "..", "web", "dist"),
+		)
+	}
+	return append(candidates,
+		filepath.Join("web", "build", "client"),
+		filepath.Join("web", "dist"),
+	)
 }
 
 func (s *Server) withCORS(next http.Handler) http.Handler {
@@ -740,6 +796,37 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 func methodNotAllowed(w http.ResponseWriter) {
 	writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+}
+
+func latestGitHubRelease(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/Dino-VN/BRoute/releases/latest", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "broute-update-check")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return "", fmt.Errorf("GitHub returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var body struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", err
+	}
+	if body.TagName == "" {
+		return "", errors.New("latest release did not include a tag")
+	}
+	return strings.TrimPrefix(body.TagName, "v"), nil
+}
+
+func versionDifferent(current, latest string) bool {
+	return strings.TrimPrefix(strings.TrimSpace(current), "v") != strings.TrimPrefix(strings.TrimSpace(latest), "v")
 }
 
 func clientIP(r *http.Request) string {

@@ -24,11 +24,6 @@ export WEB_PORT="${WEB_PORT:-5173}"
 export DATA_DIR="${DATA_DIR:-$ROOT_DIR/.data}"
 export WEB_DEV_PROXY="${WEB_DEV_PROXY:-http://127.0.0.1:$WEB_PORT}"
 
-if [[ -z "${JWT_SECRET:-}" ]]; then
-  export JWT_SECRET="dev-${HOSTNAME:-local}-omniroute-go"
-  echo "[dev] JWT_SECRET was not set; using a local development secret."
-fi
-
 cleanup() {
   kill_process_group "${GO_PID:-}"
   kill_process_group "${WEB_PID:-}"
@@ -51,7 +46,7 @@ go_signature() {
 start_go() {
   echo "[dev] Starting Go API on http://localhost:$PORT"
   echo "[dev] UI is proxied through Go from $WEB_DEV_PROXY"
-  setsid go run ./cmd/omniroute &
+  setsid go run ./cmd/broute &
   GO_PID=$!
 }
 

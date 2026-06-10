@@ -1,0 +1,24 @@
+{
+  "name": "broute",
+  "version": "0.0.1",
+  "description": "BRoute launcher and updater",
+  "type": "module",
+  "bin": {
+    "broute": "bin/broute.mjs"
+  },
+  "files": [
+    "bin/broute.mjs",
+    "README.md"
+  ],
+  "scripts": {
+    "package": "node scripts/package-release.mjs",
+    "build": "npm run package",
+    "test": "go test ./... && cd web && npm run typecheck"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "tar": "^7.5.2"
+  }
+}
