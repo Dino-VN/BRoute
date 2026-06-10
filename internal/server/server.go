@@ -89,7 +89,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"currentVersion": s.cfg.AppVersion, "latestVersion": latest, "updateAvailable": versionDifferent(s.cfg.AppVersion, latest)})
 	case http.MethodPost:
-		cmd := exec.CommandContext(r.Context(), "npx", "broute", "update")
+		cmd := exec.CommandContext(r.Context(), "npx", "broute-cli", "update")
 		cmd.Env = append(os.Environ(), "BROWSER=none")
 		output, err := cmd.CombinedOutput()
 		if err != nil {
@@ -752,13 +752,16 @@ func staticDistCandidates() []string {
 	if exe, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exe)
 		candidates = append(candidates,
+			filepath.Join(exeDir, "web"),
 			filepath.Join(exeDir, "web", "build", "client"),
 			filepath.Join(exeDir, "web", "dist"),
+			filepath.Join(exeDir, "..", "web"),
 			filepath.Join(exeDir, "..", "web", "build", "client"),
 			filepath.Join(exeDir, "..", "web", "dist"),
 		)
 	}
 	return append(candidates,
+		filepath.Join("web"),
 		filepath.Join("web", "build", "client"),
 		filepath.Join("web", "dist"),
 	)

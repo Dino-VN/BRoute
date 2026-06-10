@@ -22,13 +22,13 @@ for (const target of targets) {
   if (!goos || !goarch) throw new Error(`Invalid target: ${target}`)
   const stage = path.join(dist, `broute_${goos}_${goarch}`)
   await mkdir(path.join(stage, "bin"), { recursive: true })
-  await mkdir(path.join(stage, "web", "build"), { recursive: true })
+  await mkdir(path.join(stage, "web"), { recursive: true })
   const binary = path.join(stage, "bin", goos === "windows" ? "broute.exe" : "broute")
   run("go", ["build", "-ldflags", `-s -w -X broute/internal/config.Version=${version}`, "-o", binary, "./cmd/broute"], {
     cwd: root,
     env: { ...process.env, CGO_ENABLED: process.env.CGO_ENABLED || "1", GOOS: goos, GOARCH: goarch },
   })
-  await cp(path.join(root, "web", "build", "client"), path.join(stage, "web", "build", "client"), { recursive: true })
+  await cp(path.join(root, "web", "build", "client"), path.join(stage, "web"), { recursive: true })
   await tar.c({ gzip: true, cwd: stage, file: path.join(dist, `broute_${goos}_${goarch}.tar.gz`) }, ["bin", "web"])
 }
 
