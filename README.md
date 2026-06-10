@@ -1,0 +1,23 @@
+# BRoute
+
+BRoute is a local routing console for provider accounts and API access.
+
+## Install
+
+```bash
+npx @dino-vn/broute
+```
+
+The launcher downloads the latest GitHub release into `~/.broute` and starts the bundled server and web UI.
+
+## Update
+
+```bash
+npx @dino-vn/broute update
+```
+
+The in-app sidebar also checks GitHub releases and can trigger the same update flow.
+
+## Data
+
+By default BRoute stores runtime files in `~/.broute`. On first run it creates `.env` with `JWT_SECRET`, `STORAGE_ENCRYPTION_KEY`, and `STORAGE_ENCRYPTION_KEY_VERSION` when missing.
