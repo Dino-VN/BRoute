@@ -17,6 +17,7 @@ npx broute-cli update
 ```
 
 The in-app sidebar also checks GitHub releases and can trigger the same update flow.
+After an in-app update finishes, BRoute restarts itself and the web console reloads when the server is back online.
 
 ## Data
 

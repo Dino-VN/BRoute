@@ -23,10 +23,67 @@ func TestResolveTraeMode(t *testing.T) {
 	}
 }
 
-func TestFlattenTraeQuery(t *testing.T) {
-	query := FlattenTraeQuery([]Message{{Role: "system", Content: "be concise"}, {Role: "user", Content: "hello"}})
-	if !strings.Contains(query, "[System]\\nbe concise") || !strings.Contains(query, "hello") {
-		t.Fatalf("unexpected query: %s", query)
+func TestBuildTraeIDERequest(t *testing.T) {
+	req, err := BuildTraeIDERequest("minimax-m3", []Message{
+		{Role: "system", Content: "be concise"},
+		{Role: "assistant", Content: "sure"},
+		{Role: "user", Content: "hello"},
+	}, time.Date(2026, 6, 11, 17, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.UserInput != "hello" || req.ModelName != "minimax-m3" || req.CurrentTurn != 2 {
+		t.Fatalf("unexpected request core: %#v", req)
+	}
+	if len(req.ChatHistory) != 2 || req.ChatHistory[0].Content != "[System]\nbe concise" || req.ChatHistory[1].Role != "assistant" {
+		t.Fatalf("unexpected history: %#v", req.ChatHistory)
+	}
+	if req.LastLLMResponseInfo == nil || req.LastLLMResponseInfo.Response != "sure" {
+		t.Fatalf("unexpected last llm response info: %#v", req.LastLLMResponseInfo)
+	}
+	if len(req.ValidTurns) != 2 || req.ValidTurns[0] != 0 || req.ValidTurns[1] != 1 {
+		t.Fatalf("unexpected valid turns: %#v", req.ValidTurns)
+	}
+	if !strings.Contains(req.Variables, "\"raw_input\":\"hello\"") || !strings.Contains(req.Variables, "\"brand\":\"Trae\"") {
+		t.Fatalf("unexpected variables: %s", req.Variables)
+	}
+}
+
+func TestBuildTraeSoloSessionRequest(t *testing.T) {
+	req, err := BuildTraeSoloSessionRequest("minimax-m3", []Message{
+		{Role: "system", Content: "be concise"},
+		{Role: "assistant", Content: "sure"},
+		{Role: "user", Content: "hello"},
+	}, map[string]any{"webId": "web-1", "bizUserId": "biz-1", "userUniqueId": "unique-1"}, map[string]any{"tools": []any{map[string]any{"type": "function", "function": map[string]any{"name": "list_files", "description": "List files"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Mode != "code" || req.Env != "remote" || req.Origin != "web" || req.AutoCreateProject {
+		t.Fatalf("unexpected request core: %#v", req)
+	}
+	if req.InitialMessage.AgentType != "solo_agent_remote" || req.InitialMessage.ModelSelectionStrategy != "manual" || req.InitialMessage.ModelName != "minimax-m3" {
+		t.Fatalf("unexpected initial message: %#v", req.InitialMessage)
+	}
+	var queryPayload []struct {
+		Data struct {
+			Content string `json:"content"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(req.InitialMessage.Query), &queryPayload); err != nil || len(queryPayload) != 1 {
+		t.Fatalf("unexpected query json: %s err=%v", req.InitialMessage.Query, err)
+	}
+	queryContent := queryPayload[0].Data.Content
+	availableToolsStart := strings.Index(queryContent, "<available_tools>")
+	availableToolsEnd := strings.Index(queryContent, "</available_tools>")
+	if availableToolsStart < 0 || availableToolsEnd < 0 || availableToolsEnd <= availableToolsStart {
+		t.Fatalf("missing available_tools block: %s", queryContent)
+	}
+	availableTools := queryContent[availableToolsStart:availableToolsEnd]
+	if !strings.Contains(availableTools, "\"name\": \"list_files\"") || strings.Contains(availableTools, "\"name\": \"bash\"") || !strings.Contains(queryContent, "<system>\nbe concise\n</system>") || !strings.Contains(queryContent, "<assistant>\nsure\n</assistant>") || !strings.Contains(queryContent, "<user>\nhello\n</user>") {
+		t.Fatalf("unexpected query content: %s", queryContent)
+	}
+	if !strings.Contains(req.InitialMessage.CommonParams, "\"solo_chat_mode\":\"code\"") || !strings.Contains(req.InitialMessage.CommonParams, "\"web_id\":\"web-1\"") {
+		t.Fatalf("unexpected common params: %s", req.InitialMessage.CommonParams)
 	}
 }
 

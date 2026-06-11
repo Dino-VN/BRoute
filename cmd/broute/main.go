@@ -24,6 +24,9 @@ func main() {
 	defer db.Close()
 
 	handler := server.New(cfg, db)
+	backgroundCtx, stopBackground := context.WithCancel(context.Background())
+	defer stopBackground()
+	handler.StartBackgroundTasks(backgroundCtx)
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           handler,

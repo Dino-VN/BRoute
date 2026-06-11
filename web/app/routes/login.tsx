@@ -4,7 +4,13 @@ import { LockKeyhole } from "lucide-react"
 import { useNavigate, useSearchParams } from "react-router"
 
 import { Button } from "~/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "~/components/ui/card"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "~/components/ui/card"
 import { Input } from "~/components/ui/input"
 import { FormField, Brand } from "~/components/console-layout"
 import { loginWithPassword, setupPassword, useAuthStatus } from "~/lib/auth"
@@ -64,25 +70,58 @@ export default function Login() {
           <div className="grid gap-1">
             <div className="flex items-center gap-2">
               <LockKeyhole className="size-5 text-muted-foreground" />
-              <CardTitle>{setupMode ? "Set admin password" : "Login"}</CardTitle>
+              <CardTitle>
+                {setupMode ? "Set admin password" : "Login"}
+              </CardTitle>
             </div>
-            <CardDescription>{setupMode ? "Create the password required to manage OmniRoute." : "Enter the admin password to continue."}</CardDescription>
+            <CardDescription>
+              {setupMode
+                ? "Create the password required to manage OmniRoute."
+                : "Enter the admin password to continue."}
+            </CardDescription>
           </div>
         </CardHeader>
         <CardContent>
-          {loading ? <p className="text-sm text-muted-foreground">Checking authentication...</p> : (
+          {loading ? (
+            <p className="text-sm text-muted-foreground">
+              Checking authentication...
+            </p>
+          ) : (
             <form onSubmit={submit} className="space-y-4">
-              {error && <p className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{error}</p>}
-              {formError && <p className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{formError}</p>}
+              {error && (
+                <p className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                  {error}
+                </p>
+              )}
+              {formError && (
+                <p className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                  {formError}
+                </p>
+              )}
               <FormField label="Password">
-                <Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoFocus />
+                <Input
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  autoFocus
+                />
               </FormField>
               {setupMode && (
                 <FormField label="Confirm password">
-                  <Input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
+                  <Input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(event) => setConfirmPassword(event.target.value)}
+                  />
                 </FormField>
               )}
-              <Button type="submit" className="w-full" disabled={submitting}>{submitting ? "Please wait..." : setupMode ? "Create password" : "Login"}</Button>
+              <Button type="submit" className="w-full" disabled={submitting}>
+                {submitting
+                  ? "Please wait..."
+                  : setupMode
+                    ? "Create password"
+                    : "Login"}
+              </Button>
             </form>
           )}
         </CardContent>

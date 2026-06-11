@@ -31,7 +31,7 @@ var Registry = map[string]Provider{
 		BaseURL:   "https://chatgpt.com/backend-api/codex/responses",
 		LoginURL:  "https://auth.openai.com/oauth/authorize",
 		LoginFlow: "browser",
-		Models:    models("codex", []string{"gpt-5.5", "gpt-5.5-xhigh", "gpt-5.5-high", "gpt-5.5-medium", "gpt-5.5-low", "gpt-5.4", "gpt-5.4-high", "gpt-5.4-low", "gpt-5.3-codex-spark", "gpt-5.3-codex", "gpt-5.2"}),
+		Models:    models("codex", []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark", "gpt-5.3-codex", "gpt-5.2"}),
 	},
 	"kiro": {
 		ID: "kiro", Name: "Kiro AI", Format: "kiro", AuthType: "oauth", AuthHeader: "bearer",
@@ -43,8 +43,8 @@ var Registry = map[string]Provider{
 	"trae": {
 		ID: "trae", Name: "Trae", Format: "openai", AuthType: "oauth", AuthHeader: "bearer",
 		BaseURL:   "https://core-normal.trae.ai/api/remote/v1",
-		LoginURL:  "https://trae.ai",
-		LoginFlow: "import",
+		LoginURL:  "https://www.trae.ai/authorization",
+		LoginFlow: "browser",
 		Models:    models("trae", []string{"auto", "work", "gemini-3.1-pro", "gemini-3-flash-solo", "minimax-m3", "minimax-m2.7", "kimi-k2.5", "gpt-5.4", "gpt-5.2"}),
 	},
 }

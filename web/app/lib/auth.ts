@@ -19,8 +19,10 @@ export function useAuthStatus() {
         fetch("/api/settings/require-login", { credentials: "include" }),
         fetch("/api/auth/status", { credentials: "include" }),
       ])
-      if (!settingsResponse.ok) throw new Error(`Settings API returned ${settingsResponse.status}`)
-      if (!statusResponse.ok) throw new Error(`Auth status API returned ${statusResponse.status}`)
+      if (!settingsResponse.ok)
+        throw new Error(`Settings API returned ${settingsResponse.status}`)
+      if (!statusResponse.ok)
+        throw new Error(`Auth status API returned ${statusResponse.status}`)
       const settingsData = await settingsResponse.json()
       const statusData = await statusResponse.json()
       setSettings({
@@ -31,7 +33,9 @@ export function useAuthStatus() {
       })
       setError("")
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to load auth status")
+      setError(
+        err instanceof Error ? err.message : "Unable to load auth status"
+      )
     } finally {
       setLoading(false)
     }
@@ -52,7 +56,8 @@ export async function loginWithPassword(password: string) {
     body: JSON.stringify({ password }),
   })
   const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.error || `Login failed with ${response.status}`)
+  if (!response.ok)
+    throw new Error(data.error || `Login failed with ${response.status}`)
   return data
 }
 
@@ -64,7 +69,8 @@ export async function setupPassword(password: string) {
     body: JSON.stringify({ requireLogin: true, password }),
   })
   const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.error || `Setup failed with ${response.status}`)
+  if (!response.ok)
+    throw new Error(data.error || `Setup failed with ${response.status}`)
   return data
 }
 

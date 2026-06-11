@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "react-router build",
-    "dev": "NODE_OPTIONS=--max-http-header-size=65536 react-router dev",
+    "dev": "react-router dev",
     "typecheck": "react-router typegen && tsc",
     "format": "prettier --write \"**/*.{ts,tsx}\""
   },

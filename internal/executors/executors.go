@@ -10,14 +10,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"broute/internal/providers"
 	"broute/internal/store"
+
+	"github.com/google/uuid"
 )
 
 type ChatRequest struct {
@@ -25,6 +26,15 @@ type ChatRequest struct {
 	Messages []Message      `json:"messages"`
 	Stream   bool           `json:"stream"`
 	Raw      map[string]any `json:"-"`
+	Debug    *DebugInfo     `json:"-"`
+}
+
+type DebugInfo struct {
+	ConvertedBody any    `json:"convertedBody,omitempty"`
+	ToolCallDump  string `json:"toolCallDump,omitempty"`
+	UpstreamURL   string `json:"upstreamUrl,omitempty"`
+	StatusCode    int    `json:"statusCode,omitempty"`
+	ResponseBody  string `json:"responseBody,omitempty"`
 }
 
 type Message struct {
@@ -75,32 +85,24 @@ func (Trae) Execute(ctx context.Context, p providers.Provider, model string, req
 		return Mock{Provider: "trae"}.Execute(ctx, p, model, req, cred)
 	}
 	client := &http.Client{Timeout: 30 * time.Second}
-	headers := traeHeaders(cred)
-	query := FlattenTraeQuery(req.Messages)
-	mode, strategy, modelName := ResolveTraeMode(model)
-	body := map[string]any{
-		"mode":           mode,
-		"environment_id": "default",
-		"initial_message": map[string]any{
-			"chat_session_id":          "",
-			"content":                  []any{},
-			"query":                    query,
-			"model_name":               modelName,
-			"agent_type":               "solo_agent_remote",
-			"model_selection_strategy": strategy,
-			"common_params":            traeCommonParams(cred.ProviderSpecificData, mode, ""),
-		},
-		"env":                 "remote",
-		"auto_create_project": false,
-		"origin":              "web",
+	body, err := BuildTraeSoloSessionRequest(model, req.Messages, cred.ProviderSpecificData, req.Raw)
+	if err != nil {
+		return Result{}, err
+	}
+	if req.Debug != nil {
+		req.Debug.ConvertedBody = body
+		req.Debug.ToolCallDump = body.InitialMessage.Query
 	}
 	bodyBytes, _ := json.Marshal(body)
 	base := strings.TrimRight(p.BaseURL, "/")
+	if req.Debug != nil {
+		req.Debug.UpstreamURL = base + "/chat_sessions"
+	}
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/chat_sessions", bytes.NewReader(bodyBytes))
 	if err != nil {
 		return Result{}, err
 	}
-	for k, v := range headers {
+	for k, v := range traeHeaders(cred) {
 		hreq.Header.Set(k, v)
 	}
 	res, err := client.Do(hreq)
@@ -108,61 +110,67 @@ func (Trae) Execute(ctx context.Context, p providers.Provider, model string, req
 		return Result{}, err
 	}
 	defer res.Body.Close()
-	data, _ := io.ReadAll(res.Body)
+	if req.Debug != nil {
+		req.Debug.StatusCode = res.StatusCode
+	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		data, _ := io.ReadAll(res.Body)
+		if req.Debug != nil {
+			req.Debug.ResponseBody = string(data)
+		}
 		return Result{}, fmt.Errorf("trae create session [%d] %s", res.StatusCode, string(data))
 	}
-	var created struct {
+	data, _ := io.ReadAll(res.Body)
+	if req.Debug != nil {
+		req.Debug.ResponseBody = string(data)
+	}
+	var createResponse struct {
 		Code int `json:"code"`
 		Data struct {
-			SessionID string `json:"chat_session_id"`
-			MessageID string `json:"message_id"`
+			ChatSessionID string `json:"chat_session_id"`
+			MessageID     string `json:"message_id"`
 		} `json:"data"`
-		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(data, &created); err != nil {
+	if err := json.Unmarshal(data, &createResponse); err != nil {
+		return Result{}, fmt.Errorf("decode trae create session response failed: %w", err)
+	}
+	if createResponse.Code != 0 || createResponse.Data.ChatSessionID == "" || createResponse.Data.MessageID == "" {
+		return Result{}, fmt.Errorf("trae create session response invalid: %s", string(data))
+	}
+	eventsURL := fmt.Sprintf("%s/chat_sessions/%s/events?reply_to_message_id=%s", base, createResponse.Data.ChatSessionID, url.QueryEscape(createResponse.Data.MessageID))
+	if req.Debug != nil {
+		req.Debug.UpstreamURL = eventsURL
+	}
+	eventsReq, err := http.NewRequestWithContext(ctx, http.MethodGet, eventsURL, nil)
+	if err != nil {
 		return Result{}, err
 	}
-	if created.Code != 0 {
-		return Result{}, fmt.Errorf("trae create session: %s", string(data))
+	for k, v := range traeHeaders(cred) {
+		eventsReq.Header.Set(k, v)
+	}
+	eventsRes, err := client.Do(eventsReq)
+	if err != nil {
+		return Result{}, err
+	}
+	defer eventsRes.Body.Close()
+	if req.Debug != nil {
+		req.Debug.StatusCode = eventsRes.StatusCode
+	}
+	if eventsRes.StatusCode < 200 || eventsRes.StatusCode >= 300 {
+		data, _ := io.ReadAll(eventsRes.Body)
+		if req.Debug != nil {
+			req.Debug.ResponseBody = string(data)
+		}
+		return Result{}, fmt.Errorf("trae events [%d] %s", eventsRes.StatusCode, string(data))
+	}
+	eventsData, _ := io.ReadAll(eventsRes.Body)
+	if req.Debug != nil {
+		req.Debug.ResponseBody = "create_session:\n" + string(data) + "\n\nevents:\n" + string(eventsData)
 	}
 	stream := func(emit func(string) error) error {
-		url := fmt.Sprintf("%s/chat_sessions/%s/events?reply_to_message_id=%s", base, created.Data.SessionID, created.Data.MessageID)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return err
-		}
-		for k, v := range headers {
-			req.Header.Set(k, v)
-		}
-		res, err := client.Do(req)
-		if err != nil {
-			return err
-		}
-		defer res.Body.Close()
-		if res.StatusCode < 200 || res.StatusCode >= 300 {
-			return fmt.Errorf("trae events [%d]", res.StatusCode)
-		}
-		return ParseTraeSSE(res.Body, emit)
+		return ParseTraeSSE(bytes.NewReader(eventsData), emit)
 	}
 	return Result{Stream: stream}, nil
-}
-
-func FlattenTraeQuery(messages []Message) string {
-	parts := []string{}
-	for _, m := range messages {
-		content := contentToText(m.Content)
-		switch m.Role {
-		case "system":
-			parts = append(parts, "[System]\n"+content)
-		case "assistant":
-			parts = append(parts, "[Assistant]\n"+content)
-		default:
-			parts = append(parts, content)
-		}
-	}
-	data, _ := json.Marshal([]map[string]any{{"type": "text", "data": map[string]any{"content": strings.Join(parts, "\n\n")}}})
-	return string(data)
 }
 
 func ResolveTraeMode(model string) (mode, strategy, modelName string) {
@@ -205,6 +213,21 @@ func ParseTraeSSE(r io.Reader, emit func(string) error) error {
 		}
 		if event == "done" {
 			return nil
+		}
+		if event == "output" {
+			text := ""
+			if reasoning, _ := data["reasoning_content"].(string); reasoning != "" {
+				text += reasoning
+			}
+			if response, _ := data["response"].(string); response != "" {
+				text += response
+			}
+			if text != "" {
+				if err := emit(text); err != nil {
+					return err
+				}
+			}
+			continue
 		}
 		if event != "plan_item" {
 			continue
@@ -319,10 +342,11 @@ func (Codex) Execute(ctx context.Context, p providers.Provider, model string, re
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		defer res.Body.Close()
 		data, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
+		result := Result{Meta: map[string]any{"codexQuota": quota.ToMap()}}
 		if cooldown := CodexCooldown(quota, time.Now()); cooldown > 0 {
-			return Result{}, fmt.Errorf("codex upstream [%d] quota cooldown %s: %s", res.StatusCode, cooldown.Round(time.Second), strings.TrimSpace(string(data)))
+			return result, fmt.Errorf("codex upstream [%d] quota cooldown %s: %s", res.StatusCode, cooldown.Round(time.Second), strings.TrimSpace(string(data)))
 		}
-		return Result{}, fmt.Errorf("codex upstream [%d] %s", res.StatusCode, strings.TrimSpace(string(data)))
+		return result, fmt.Errorf("codex upstream [%d] %s", res.StatusCode, strings.TrimSpace(string(data)))
 	}
 	return Result{Stream: func(emit func(string) error) error {
 		defer res.Body.Close()
@@ -337,20 +361,22 @@ type CodexQuotaWindow struct {
 }
 
 type CodexQuota struct {
-	FiveHour CodexQuotaWindow
-	SevenDay CodexQuotaWindow
+	FiveHour  CodexQuotaWindow
+	SevenDay  CodexQuotaWindow
+	ThirtyDay CodexQuotaWindow
 }
 
 func ParseCodexQuotaHeaders(h http.Header) CodexQuota {
 	return CodexQuota{
-		FiveHour: CodexQuotaWindow{Usage: intHeader(h, "x-codex-5h-usage"), Limit: intHeader(h, "x-codex-5h-limit"), ResetAt: timeHeader(h, "x-codex-5h-reset-at")},
-		SevenDay: CodexQuotaWindow{Usage: intHeader(h, "x-codex-7d-usage"), Limit: intHeader(h, "x-codex-7d-limit"), ResetAt: timeHeader(h, "x-codex-7d-reset-at")},
+		FiveHour:  quotaWindowFromHeaders(h, []string{"x-codex-5h", "x-codex-5-hour"}),
+		SevenDay:  quotaWindowFromHeaders(h, []string{"x-codex-7d", "x-codex-7-day"}),
+		ThirtyDay: quotaWindowFromHeaders(h, []string{"x-codex-30d", "x-codex-30-day", "x-codex-30day", "x-codex-monthly"}),
 	}
 }
 
 func CodexCooldown(q CodexQuota, now time.Time) time.Duration {
 	cooldown := time.Duration(0)
-	for _, w := range []CodexQuotaWindow{q.FiveHour, q.SevenDay} {
+	for _, w := range []CodexQuotaWindow{q.FiveHour, q.SevenDay, q.ThirtyDay} {
 		if w.Limit > 0 && w.Usage >= w.Limit && w.ResetAt.After(now) {
 			if d := w.ResetAt.Sub(now); d > cooldown {
 				cooldown = d
@@ -361,7 +387,41 @@ func CodexCooldown(q CodexQuota, now time.Time) time.Duration {
 }
 
 func (q CodexQuota) ToMap() map[string]any {
-	return map[string]any{"fiveHour": q.FiveHour.toMap(), "sevenDay": q.SevenDay.toMap()}
+	return map[string]any{"fiveHour": q.FiveHour.toMap(), "sevenDay": q.SevenDay.toMap(), "thirtyDay": q.ThirtyDay.toMap()}
+}
+
+func quotaWindowFromHeaders(h http.Header, prefixes []string) CodexQuotaWindow {
+	return CodexQuotaWindow{
+		Usage:   firstIntHeader(h, suffixes(prefixes, "usage")...),
+		Limit:   firstIntHeader(h, suffixes(prefixes, "limit")...),
+		ResetAt: firstTimeHeader(h, suffixes(prefixes, "reset-at")...),
+	}
+}
+
+func suffixes(prefixes []string, suffix string) []string {
+	names := make([]string, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		names = append(names, prefix+"-"+suffix)
+	}
+	return names
+}
+
+func firstIntHeader(h http.Header, names ...string) int {
+	for _, name := range names {
+		if value := intHeader(h, name); value != 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func firstTimeHeader(h http.Header, names ...string) time.Time {
+	for _, name := range names {
+		if value := timeHeader(h, name); !value.IsZero() {
+			return value
+		}
+	}
+	return time.Time{}
 }
 
 func (w CodexQuotaWindow) toMap() map[string]any {
@@ -602,6 +662,27 @@ func BuildAntigravityEnvelope(project, model string, request map[string]any) map
 func traeHeaders(cred store.ProviderConnection) map[string]string {
 	psd := cred.ProviderSpecificData
 	return map[string]string{"Authorization": "Cloud-IDE-JWT " + cred.AccessToken, "Content-Type": "application/json", "X-Trae-Client-Type": "web", "X-Preferenced-Language": stringValue(psd, "appLanguage", "en"), "x-user-region": stringValue(psd, "userRegion", "US"), "Referer": "https://solo.trae.ai/", "User-Agent": "Mozilla/5.0 AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36"}
+}
+
+func traeIDEHeaders(cred store.ProviderConnection, baseURL string) map[string]string {
+	psd := cred.ProviderSpecificData
+	return map[string]string{
+		"Content-Type":       "application/json",
+		"x-app-id":           stringValue(psd, "appId", "682161"),
+		"x-ide-version":      "3.5.65",
+		"x-ide-version-code": "20260625",
+		"x-ide-version-type": "stable",
+		"x-device-cpu":       stringValue(psd, "deviceCPU", "AMD"),
+		"x-device-id":        stringValue(psd, "deviceId", ""),
+		"x-machine-id":       stringValue(psd, "machineId", ""),
+		"x-device-brand":     stringValue(psd, "deviceBrand", "92L3"),
+		"x-device-type":      stringValue(psd, "deviceType", "windows"),
+		"x-ide-token":        cred.AccessToken,
+		"accept":             "*/*",
+		"Connection":         "keep-alive",
+		"User-Agent":         "",
+		"Referer":            strings.TrimRight(baseURL, "/") + "/",
+	}
 }
 
 func traeCommonParams(psd map[string]any, mode, sessionID string) string {
