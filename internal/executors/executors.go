@@ -37,6 +37,29 @@ type DebugInfo struct {
 	ResponseBody  string `json:"responseBody,omitempty"`
 }
 
+type debugReadCloser struct {
+	reader io.Reader
+	debug  *DebugInfo
+	limit  int
+	seen   int
+}
+
+func (r *debugReadCloser) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 && r.debug != nil && r.seen < r.limit {
+		remaining := r.limit - r.seen
+		if n < remaining {
+			remaining = n
+		}
+		r.debug.ResponseBody += string(p[:remaining])
+		r.seen += remaining
+		if r.seen >= r.limit {
+			r.debug.ResponseBody += "\n... truncated ..."
+		}
+	}
+	return n, err
+}
+
 type Message struct {
 	Role    string `json:"role"`
 	Content any    `json:"content"`
@@ -84,7 +107,7 @@ func (Trae) Execute(ctx context.Context, p providers.Provider, model string, req
 	if cred.AccessToken == "" {
 		return Mock{Provider: "trae"}.Execute(ctx, p, model, req, cred)
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: traeCreateSessionTimeout()}
 	body, err := BuildTraeSoloSessionRequest(model, req.Messages, cred.ProviderSpecificData, req.Raw)
 	if err != nil {
 		return Result{}, err
@@ -148,11 +171,11 @@ func (Trae) Execute(ctx context.Context, p providers.Provider, model string, req
 	for k, v := range traeHeaders(cred) {
 		eventsReq.Header.Set(k, v)
 	}
-	eventsRes, err := client.Do(eventsReq)
+	eventsClient := &http.Client{}
+	eventsRes, err := eventsClient.Do(eventsReq)
 	if err != nil {
 		return Result{}, err
 	}
-	defer eventsRes.Body.Close()
 	if req.Debug != nil {
 		req.Debug.StatusCode = eventsRes.StatusCode
 	}
@@ -163,14 +186,31 @@ func (Trae) Execute(ctx context.Context, p providers.Provider, model string, req
 		}
 		return Result{}, fmt.Errorf("trae events [%d] %s", eventsRes.StatusCode, string(data))
 	}
-	eventsData, _ := io.ReadAll(eventsRes.Body)
 	if req.Debug != nil {
-		req.Debug.ResponseBody = "create_session:\n" + string(data) + "\n\nevents:\n" + string(eventsData)
+		req.Debug.ResponseBody = "create_session:\n" + string(data) + "\n\nevents:\n(streaming)"
 	}
 	stream := func(emit func(string) error) error {
-		return ParseTraeSSE(bytes.NewReader(eventsData), emit)
+		defer eventsRes.Body.Close()
+		reader := io.Reader(eventsRes.Body)
+		if req.Debug != nil {
+			req.Debug.ResponseBody = "create_session:\n" + string(data) + "\n\nevents:\n"
+			reader = &debugReadCloser{reader: eventsRes.Body, debug: req.Debug, limit: 64 * 1024}
+		}
+		return ParseTraeSSE(reader, emit)
 	}
 	return Result{Stream: stream}, nil
+}
+
+func traeCreateSessionTimeout() time.Duration {
+	value := strings.TrimSpace(os.Getenv("TRAE_HTTP_TIMEOUT"))
+	if value == "" {
+		return 10 * time.Minute
+	}
+	parsed, err := time.ParseDuration(value)
+	if err == nil && parsed >= time.Minute {
+		return parsed
+	}
+	return 10 * time.Minute
 }
 
 func ResolveTraeMode(model string) (mode, strategy, modelName string) {
@@ -191,70 +231,118 @@ func ParseTraeSSE(r io.Reader, emit func(string) error) error {
 	thoughts := map[string]string{}
 	sent := 0
 	event := ""
+	dataLines := []string{}
+	flush := func() error {
+		if len(dataLines) == 0 {
+			return nil
+		}
+		payload := strings.Join(dataLines, "\n")
+		dataLines = nil
+		return parseTraeSSEPayload(event, payload, emit, &order, thoughts, &sent)
+	}
 	for scanner.Scan() {
 		line := strings.TrimRight(scanner.Text(), "\r")
 		if strings.HasPrefix(line, "event:") {
+			if err := flush(); err != nil {
+				return err
+			}
 			event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 			continue
 		}
 		if line == "" {
+			if err := flush(); err != nil {
+				return err
+			}
 			event = ""
 			continue
 		}
-		if !strings.HasPrefix(line, "data:") {
+		if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 			continue
-		}
-		var data map[string]any
-		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &data); err != nil {
-			continue
-		}
-		if event == "error" {
-			return fmt.Errorf("trae error: %v", data)
-		}
-		if event == "done" {
-			return nil
-		}
-		if event == "output" {
-			text := ""
-			if reasoning, _ := data["reasoning_content"].(string); reasoning != "" {
-				text += reasoning
-			}
-			if response, _ := data["response"].(string); response != "" {
-				text += response
-			}
-			if text != "" {
-				if err := emit(text); err != nil {
-					return err
-				}
-			}
-			continue
-		}
-		if event != "plan_item" {
-			continue
-		}
-		id, _ := data["id"].(string)
-		thought, _ := data["thought"].(string)
-		if id == "" {
-			continue
-		}
-		if _, ok := thoughts[id]; !ok {
-			order = append(order, id)
-		}
-		if len(thought) >= len(thoughts[id]) {
-			thoughts[id] = thought
-		}
-		full := ""
-		for _, key := range order {
-			full += thoughts[key]
-		}
-		if len(full) > sent {
-			if err := emit(full[sent:]); err != nil {
-				return err
-			}
-			sent = len(full)
 		}
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return flush()
+}
+
+func parseTraeSSEPayload(event, payload string, emit func(string) error, order *[]string, thoughts map[string]string, sent *int) error {
+	if strings.TrimSpace(payload) == "" {
+		return nil
+	}
+	if strings.TrimSpace(payload) == "[DONE]" || event == "done" {
+		return nil
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(payload), &data); err != nil {
+		if event == "output" {
+			return emit(payload)
+		}
+		return nil
+	}
+	if event == "error" {
+		return fmt.Errorf("trae error: %v", data)
+	}
+	if text := traeOutputText(data); text != "" {
+		return emit(text)
+	}
+	if event != "plan_item" {
+		return nil
+	}
+	id, _ := data["id"].(string)
+	thought, _ := data["thought"].(string)
+	if id == "" {
+		return nil
+	}
+	if _, ok := thoughts[id]; !ok {
+		*order = append(*order, id)
+	}
+	if len(thought) >= len(thoughts[id]) {
+		thoughts[id] = thought
+	}
+	full := ""
+	for _, key := range *order {
+		full += thoughts[key]
+	}
+	if len(full) > *sent {
+		if err := emit(full[*sent:]); err != nil {
+			return err
+		}
+		*sent = len(full)
+	}
+	return nil
+}
+
+func traeOutputText(data map[string]any) string {
+	fields := []string{"reasoning_content", "response", "content", "text", "delta", "answer"}
+	var out strings.Builder
+	for _, field := range fields {
+		if text, _ := data[field].(string); text != "" {
+			out.WriteString(text)
+		}
+	}
+	for _, field := range []string{"message", "data", "payload", "result"} {
+		if nested, _ := data[field].(map[string]any); nested != nil {
+			out.WriteString(traeOutputText(nested))
+		}
+	}
+	if choices, _ := data["choices"].([]any); len(choices) > 0 {
+		for _, rawChoice := range choices {
+			choice, _ := rawChoice.(map[string]any)
+			if choice == nil {
+				continue
+			}
+			out.WriteString(traeOutputText(choice))
+			if delta, _ := choice["delta"].(map[string]any); delta != nil {
+				out.WriteString(traeOutputText(delta))
+			}
+			if message, _ := choice["message"].(map[string]any); message != nil {
+				out.WriteString(traeOutputText(message))
+			}
+		}
+	}
+	return out.String()
 }
 
 type Kiro struct{}

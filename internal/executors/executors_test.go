@@ -98,6 +98,23 @@ func TestParseTraeSSE(t *testing.T) {
 	}
 }
 
+func TestParseTraeSSEOutputShapes(t *testing.T) {
+	input := strings.Join([]string{
+		"event: output\ndata: {\"content\":\"hel\"}",
+		"event: output\ndata: {\"data\":{\"text\":\"lo\"}}",
+		"event: output\ndata: {\"choices\":[{\"delta\":{\"content\":\"!\"}}]}",
+		"event: done\ndata: {}",
+		"",
+	}, "\n\n")
+	var out strings.Builder
+	if err := ParseTraeSSE(strings.NewReader(input), func(piece string) error { out.WriteString(piece); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "hello!" {
+		t.Fatalf("unexpected stream text %q", out.String())
+	}
+}
+
 func TestParseKiroEventFrame(t *testing.T) {
 	payload, _ := json.Marshal(map[string]any{"content": "hello"})
 	headers := buildHeader(":event-type", "assistantResponseEvent")

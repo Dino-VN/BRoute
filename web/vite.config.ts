@@ -14,8 +14,8 @@ export default defineConfig({
       "/api": {
         target: apiTarget,
         changeOrigin: true,
-        proxyTimeout: 10000,
-        timeout: 10000,
+        proxyTimeout: 10 * 60 * 1000,
+        timeout: 10 * 60 * 1000,
         configure(proxy) {
           proxy.on("proxyReq", (proxyReq, req) => {
             const cookie = req.headers.cookie
